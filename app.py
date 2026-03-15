@@ -18,7 +18,7 @@ GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
 CACHED_FILES = {}
 FILES_LOADED = False
 
-# --- 1. โหลดรายชื่อรูป (Background) ---
+# --- 1. โหลดรายชื่อรูป ---
 def update_file_list():
     global CACHED_FILES, FILES_LOADED
     print("🔄 Loading file list from GitHub...")
@@ -43,6 +43,9 @@ def update_file_list():
     except Exception as e:
         print(f"❌ Error loading files: {e}")
 
+# 🔥 สั่งรันโหลดรูปทันทีที่ Gunicorn ดึงไฟล์นี้ไปใช้
+threading.Thread(target=update_file_list).start()
+
 def get_image_url(filename):
     return f"https://raw.githubusercontent.com/{GITHUB_USERNAME}/{REPO_NAME}/{BRANCH}/{FOLDER_NAME}/{filename}"
 
@@ -63,8 +66,6 @@ def send_message(recipient_id, text):
         "message": {"text": text, "metadata": "BOT_SENT_THIS"}
     }
     r = requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data)
-    if r.status_code != 200:
-        print(f"❌ Send Text Error: {r.text}")
 
 def send_image(recipient_id, image_url):
     print(f"📤 Sending Image...")
@@ -77,18 +78,19 @@ def send_image(recipient_id, image_url):
         }
     }
     r = requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data)
-    if r.status_code != 200:
-        print(f"❌ Send Image Error: {r.text}")
 
-# --- 2. LOGIC (เหมือนมหาบูชา 100%) ---
+# --- 2. LOGIC (มูเตทีม) ---
 def process_message(target_id, text, is_admin_sender):
+    # 🔥 ถ้ายังไม่โหลด ให้บังคับโหลดเดี๋ยวนี้เลย
     if not FILES_LOADED:
-        print("⚠️ Waiting for files to load...")
-        return
+        print("⚠️ Files not loaded yet. Forcing immediate load...")
+        update_file_list()
+        if not FILES_LOADED:
+            return 
 
     text_cleaned = text.lower().replace(" ", "")
     
-    # 📌 Pattern: หา 269 หรือ 999 ตามด้วยอะไรก็ได้อีก 6 ตัว
+    # 📌 Pattern: หา 269 หรือ 999 ตามด้วย 6 ตัวอักษร
     pattern = r'(?:269|999)[a-z0-9]{6}'
     valid_format_codes = re.findall(pattern, text_cleaned)
     
@@ -108,12 +110,11 @@ def process_message(target_id, text, is_admin_sender):
     if found_actions:
         take_thread_control(target_id)
         
-        # 📌 ปรับเปลี่ยนลิงก์และชื่อเพจให้ตรงกับ มูเตทีม
         intro_msg = (
             "📸 ขออนุญาตส่งภาพนะครับ\n\n"
             "รวมภาพงานพิธี กดได้ที่ link นี้\n\n"
-            " -> linktr.ee/muteteam\n\n" # ปรับเป็น muteteam
-            "หรือ รับชมได้ที่หน้าเพจ \"มูเตทีม\"\n\n" # ปรับเป็น มูเตทีม
+            " -> linktr.ee/muteteam\n\n"
+            "หรือ รับชมได้ที่หน้าเพจ \"มูเตทีม\"\n\n"
             "ทีมงานเทวาลัยสยามคเณศ ขอขอบคุณครับ"
         )
         send_message(target_id, intro_msg)
@@ -161,6 +162,5 @@ def webhook():
     return "ok", 200
 
 if __name__ == '__main__':
-    threading.Thread(target=update_file_list).start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
