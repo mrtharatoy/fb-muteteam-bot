@@ -8,7 +8,7 @@ app = Flask(__name__)
 
 # --- CONFIG (สำหรับมูเตทีม) ---
 GITHUB_USERNAME = "mrtharatoy"
-REPO_NAME = "fb-muteteam-bot"
+REPO_NAME = "fb-muteteam-bot" # 👈 เปลี่ยนเป็น Repository ของมูเตทีม
 BRANCH = "main"
 FOLDER_NAME = "images" 
 PAGE_ACCESS_TOKEN = os.environ.get('PAGE_ACCESS_TOKEN')
@@ -17,6 +17,7 @@ GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
 
 CACHED_FILES = {}
 FILES_LOADED = False
+lock = threading.Lock() # ป้องกันการโหลดซ้ำซ้อน
 
 # --- 1. โหลดรายชื่อรูป ---
 def update_file_list():
@@ -35,6 +36,7 @@ def update_file_list():
                 if item['type'] == 'file':
                     key = item['name'].rsplit('.', 1)[0].strip().lower()
                     temp_cache[key] = item['name']
+            
             CACHED_FILES = temp_cache
             FILES_LOADED = True
             print(f"✅ FILES READY: {len(CACHED_FILES)} images.")
@@ -43,9 +45,6 @@ def update_file_list():
     except Exception as e:
         print(f"❌ Error loading files: {e}")
 
-# 🔥 สั่งรันโหลดรูปทันทีที่ Gunicorn ดึงไฟล์นี้ไปใช้
-threading.Thread(target=update_file_list).start()
-
 def get_image_url(filename):
     return f"https://raw.githubusercontent.com/{GITHUB_USERNAME}/{REPO_NAME}/{BRANCH}/{FOLDER_NAME}/{filename}"
 
@@ -53,45 +52,50 @@ def get_image_url(filename):
 def take_thread_control(recipient_id):
     params = {"access_token": PAGE_ACCESS_TOKEN}
     data = {"recipient": {"id": recipient_id}}
-    r = requests.post("https://graph.facebook.com/v19.0/me/take_thread_control", params=params, json=data)
-    if r.status_code != 200:
-        print(f"⚠️ Take Control Failed: {r.text}")
+    requests.post("https://graph.facebook.com/v19.0/me/take_thread_control", params=params, json=data)
 
-# --- ฟังก์ชันส่งข้อความ ---
+# --- ฟังก์ชันส่งข้อความ (แบบพยายามเต็มที่ ฮึดสู้) ---
 def send_message(recipient_id, text):
     print(f"💬 Sending: {text}")
     params = {"access_token": PAGE_ACCESS_TOKEN}
-    data = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": text, "metadata": "BOT_SENT_THIS"}
-    }
+    
+    data = {"recipient": {"id": recipient_id}, "message": {"text": text, "metadata": "BOT_SENT_THIS"}}
     r = requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data)
+    
+    if r.status_code != 200:
+        data_tag = {"recipient": {"id": recipient_id}, "messaging_type": "MESSAGE_TAG", "tag": "CONFIRMED_EVENT_UPDATE", "message": {"text": text, "metadata": "BOT_SENT_THIS"}}
+        requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data_tag)
 
 def send_image(recipient_id, image_url):
     print(f"📤 Sending Image...")
     params = {"access_token": PAGE_ACCESS_TOKEN}
-    data = {
-        "recipient": {"id": recipient_id},
-        "message": {
-            "attachment": {"type": "image", "payload": {"url": image_url, "is_reusable": True}},
-            "metadata": "BOT_SENT_THIS"
-        }
-    }
+    
+    data = {"recipient": {"id": recipient_id}, "message": {"attachment": {"type": "image", "payload": {"url": image_url, "is_reusable": True}}, "metadata": "BOT_SENT_THIS"}}
     r = requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data)
+    
+    if r.status_code != 200:
+        data_tag = {"recipient": {"id": recipient_id}, "messaging_type": "MESSAGE_TAG", "tag": "CONFIRMED_EVENT_UPDATE", "message": {"attachment": {"type": "image", "payload": {"url": image_url, "is_reusable": True}}, "metadata": "BOT_SENT_THIS"}}
+        requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data_tag)
 
-# --- 2. LOGIC (มูเตทีม) ---
+# --- 2. LOGIC ---
 def process_message(target_id, text, is_admin_sender):
-    # 🔥 ถ้ายังไม่โหลด ให้บังคับโหลดเดี๋ยวนี้เลย
+    global FILES_LOADED
+    
+    # 🔥 ระบบโหลดรูปแบบ "รอแป๊บเดียวได้เลย"
     if not FILES_LOADED:
-        print("⚠️ Files not loaded yet. Forcing immediate load...")
-        update_file_list()
-        if not FILES_LOADED:
-            return 
+        with lock: # ให้บอททำงานทีละคิว จะได้ไม่ค้าง
+            if not FILES_LOADED:
+                take_thread_control(target_id)
+                send_message(target_id, "⏳ ระบบกำลังดึงข้อมูลภาพ กรุณารอสักครู่นะครับ...")
+                update_file_list() # โหลด 2 วินาที
+                if not FILES_LOADED:
+                    send_message(target_id, "❌ ขออภัยครับ ระบบดึงข้อมูลขัดข้อง รบกวนแจ้งแอดมินครับ 🙏")
+                    return
 
     text_cleaned = text.lower().replace(" ", "")
     
-    # 📌 Pattern: หา 269 หรือ 999 ตามด้วย 6 ตัวอักษร
-    pattern = r'(?:269|999)[a-z0-9]{6}'
+    # ใช้ Regex ความยาว 7 หลัก
+    pattern = r'(?:269|999)[a-z0-9]{7}'
     valid_format_codes = re.findall(pattern, text_cleaned)
     
     if not valid_format_codes:
@@ -106,10 +110,10 @@ def process_message(target_id, text, is_admin_sender):
         else:
             if code not in unknown_codes: unknown_codes.append(code)
 
-    # ✅ เจอรูป -> ส่ง
     if found_actions:
         take_thread_control(target_id)
         
+        # 📌 ปรับเปลี่ยนลิงก์และชื่อเพจให้ตรงกับ "มูเตทีม"
         intro_msg = (
             "📸 ขออนุญาตส่งภาพนะครับ\n\n"
             "รวมภาพงานพิธี กดได้ที่ link นี้\n\n"
@@ -125,7 +129,6 @@ def process_message(target_id, text, is_admin_sender):
             
     if is_admin_sender: return 
 
-    # ⚠️ แจ้งเตือนรหัสผิด/หาไม่เจอ
     if unknown_codes:
         take_thread_control(target_id)
         msg = (
