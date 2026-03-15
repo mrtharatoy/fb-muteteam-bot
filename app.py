@@ -6,9 +6,9 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
-# --- CONFIG (สำหรับมูเตทีม) ---
+# --- CONFIG ---
 GITHUB_USERNAME = "mrtharatoy"
-REPO_NAME = "fb-muteteam-bot" # 👈 เปลี่ยนเป็น Repository ของมูเตทีม
+REPO_NAME = "fb-muteteam-bot" # 👈 เปลี่ยนเป็น fb-mahabucha-bot ถ้าใช้กับเพจมหาบูชา
 BRANCH = "main"
 FOLDER_NAME = "images" 
 PAGE_ACCESS_TOKEN = os.environ.get('PAGE_ACCESS_TOKEN')
@@ -17,7 +17,7 @@ GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
 
 CACHED_FILES = {}
 FILES_LOADED = False
-lock = threading.Lock() # ป้องกันการโหลดซ้ำซ้อน
+lock = threading.Lock() # ป้องกันการโหลดซ้ำซ้อนจนเครื่องค้าง
 
 # --- 1. โหลดรายชื่อรูป ---
 def update_file_list():
@@ -41,7 +41,7 @@ def update_file_list():
             FILES_LOADED = True
             print(f"✅ FILES READY: {len(CACHED_FILES)} images.")
         else:
-            print(f"⚠️ Github Error: {r.status_code}")
+            print(f"⚠️ Github Error: {r.status_code} - {r.text}")
     except Exception as e:
         print(f"❌ Error loading files: {e}")
 
@@ -52,9 +52,11 @@ def get_image_url(filename):
 def take_thread_control(recipient_id):
     params = {"access_token": PAGE_ACCESS_TOKEN}
     data = {"recipient": {"id": recipient_id}}
-    requests.post("https://graph.facebook.com/v19.0/me/take_thread_control", params=params, json=data)
+    r = requests.post("https://graph.facebook.com/v19.0/me/take_thread_control", params=params, json=data)
+    if r.status_code != 200:
+        print(f"⚠️ Take Control Failed: {r.text}")
 
-# --- ฟังก์ชันส่งข้อความ (แบบพยายามเต็มที่ ฮึดสู้) ---
+# --- ฟังก์ชันส่งข้อความ (แบบพยายามเต็มที่ ฮึดสู้ + โชว์ Error) ---
 def send_message(recipient_id, text):
     print(f"💬 Sending: {text}")
     params = {"access_token": PAGE_ACCESS_TOKEN}
@@ -63,8 +65,11 @@ def send_message(recipient_id, text):
     r = requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data)
     
     if r.status_code != 200:
+        print(f"⚠️ FB Error (Text): {r.text}")
         data_tag = {"recipient": {"id": recipient_id}, "messaging_type": "MESSAGE_TAG", "tag": "CONFIRMED_EVENT_UPDATE", "message": {"text": text, "metadata": "BOT_SENT_THIS"}}
-        requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data_tag)
+        r_tag = requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data_tag)
+        if r_tag.status_code != 200:
+            print(f"❌ FB Tag Error (Text): {r_tag.text}")
 
 def send_image(recipient_id, image_url):
     print(f"📤 Sending Image...")
@@ -74,8 +79,13 @@ def send_image(recipient_id, image_url):
     r = requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data)
     
     if r.status_code != 200:
+        print(f"⚠️ FB Error (Image): {r.text}")
         data_tag = {"recipient": {"id": recipient_id}, "messaging_type": "MESSAGE_TAG", "tag": "CONFIRMED_EVENT_UPDATE", "message": {"attachment": {"type": "image", "payload": {"url": image_url, "is_reusable": True}}, "metadata": "BOT_SENT_THIS"}}
-        requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data_tag)
+        r_tag = requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data_tag)
+        if r_tag.status_code != 200:
+            print(f"❌ FB Tag Error (Image): {r_tag.text}")
+    else:
+        print("✅ Image Sent Successfully!")
 
 # --- 2. LOGIC ---
 def process_message(target_id, text, is_admin_sender):
@@ -87,14 +97,14 @@ def process_message(target_id, text, is_admin_sender):
             if not FILES_LOADED:
                 take_thread_control(target_id)
                 send_message(target_id, "⏳ ระบบกำลังดึงข้อมูลภาพ กรุณารอสักครู่นะครับ...")
-                update_file_list() # โหลด 2 วินาที
+                update_file_list() # โหลดข้อมูลประมาณ 2 วินาที
                 if not FILES_LOADED:
                     send_message(target_id, "❌ ขออภัยครับ ระบบดึงข้อมูลขัดข้อง รบกวนแจ้งแอดมินครับ 🙏")
                     return
 
     text_cleaned = text.lower().replace(" ", "")
     
-    # ใช้ Regex ความยาว 7 หลัก
+    # 📌 ใช้ Regex ความยาว 7 หลัก (เช่น 269abcdefg)
     pattern = r'(?:269|999)[a-z0-9]{7}'
     valid_format_codes = re.findall(pattern, text_cleaned)
     
@@ -113,12 +123,12 @@ def process_message(target_id, text, is_admin_sender):
     if found_actions:
         take_thread_control(target_id)
         
-        # 📌 ปรับเปลี่ยนลิงก์และชื่อเพจให้ตรงกับ "มูเตทีม"
+        # 📌 ปรับเปลี่ยนลิงก์และชื่อเพจตรงนี้
         intro_msg = (
             "📸 ขออนุญาตส่งภาพนะครับ\n\n"
             "รวมภาพงานพิธี กดได้ที่ link นี้\n\n"
-            " -> linktr.ee/muteteam\n\n"
-            "หรือ รับชมได้ที่หน้าเพจ \"มูเตทีม\"\n\n"
+            " -> linktr.ee/muteteam\n\n" # 👈 ปรับเป็น mahabucha ถ้าใช้กับมหาบูชา
+            "หรือ รับชมได้ที่หน้าเพจ \"มูเตทีม\"\n\n" # 👈 ปรับเป็น มหาบูชา ถ้าใช้กับมหาบูชา
             "ทีมงานเทวาลัยสยามคเณศ ขอขอบคุณครับ"
         )
         send_message(target_id, intro_msg)
