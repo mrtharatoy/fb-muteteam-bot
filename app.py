@@ -6,9 +6,9 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
-# --- CONFIG ---
+# --- CONFIG (มูเตทีม) ---
 GITHUB_USERNAME = "mrtharatoy"
-REPO_NAME = "fb-muteteam-bot" # 👈 เปลี่ยนเป็น fb-mahabucha-bot ถ้าใช้กับเพจมหาบูชา
+REPO_NAME = "fb-muteteam-bot" 
 BRANCH = "main"
 FOLDER_NAME = "images" 
 PAGE_ACCESS_TOKEN = os.environ.get('PAGE_ACCESS_TOKEN')
@@ -17,7 +17,7 @@ GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
 
 CACHED_FILES = {}
 FILES_LOADED = False
-lock = threading.Lock() # ป้องกันการโหลดซ้ำซ้อนจนเครื่องค้าง
+lock = threading.Lock()
 
 # --- 1. โหลดรายชื่อรูป ---
 def update_file_list():
@@ -52,83 +52,80 @@ def get_image_url(filename):
 def take_thread_control(recipient_id):
     params = {"access_token": PAGE_ACCESS_TOKEN}
     data = {"recipient": {"id": recipient_id}}
-    r = requests.post("https://graph.facebook.com/v19.0/me/take_thread_control", params=params, json=data)
-    if r.status_code != 200:
-        print(f"⚠️ Take Control Failed: {r.text}")
+    requests.post("https://graph.facebook.com/v19.0/me/take_thread_control", params=params, json=data)
 
-# --- ฟังก์ชันส่งข้อความ (แบบพยายามเต็มที่ ฮึดสู้ + โชว์ Error) ---
+# --- ฟังก์ชันส่งข้อความ ---
 def send_message(recipient_id, text):
-    print(f"💬 Sending: {text}")
     params = {"access_token": PAGE_ACCESS_TOKEN}
-    
     data = {"recipient": {"id": recipient_id}, "message": {"text": text, "metadata": "BOT_SENT_THIS"}}
     r = requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data)
     
     if r.status_code != 200:
-        print(f"⚠️ FB Error (Text): {r.text}")
         data_tag = {"recipient": {"id": recipient_id}, "messaging_type": "MESSAGE_TAG", "tag": "CONFIRMED_EVENT_UPDATE", "message": {"text": text, "metadata": "BOT_SENT_THIS"}}
-        r_tag = requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data_tag)
-        if r_tag.status_code != 200:
-            print(f"❌ FB Tag Error (Text): {r_tag.text}")
+        requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data_tag)
 
 def send_image(recipient_id, image_url):
-    print(f"📤 Sending Image...")
     params = {"access_token": PAGE_ACCESS_TOKEN}
-    
     data = {"recipient": {"id": recipient_id}, "message": {"attachment": {"type": "image", "payload": {"url": image_url, "is_reusable": True}}, "metadata": "BOT_SENT_THIS"}}
     r = requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data)
     
     if r.status_code != 200:
-        print(f"⚠️ FB Error (Image): {r.text}")
         data_tag = {"recipient": {"id": recipient_id}, "messaging_type": "MESSAGE_TAG", "tag": "CONFIRMED_EVENT_UPDATE", "message": {"attachment": {"type": "image", "payload": {"url": image_url, "is_reusable": True}}, "metadata": "BOT_SENT_THIS"}}
-        r_tag = requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data_tag)
-        if r_tag.status_code != 200:
-            print(f"❌ FB Tag Error (Image): {r_tag.text}")
-    else:
-        print("✅ Image Sent Successfully!")
+        requests.post("https://graph.facebook.com/v19.0/me/messages", params=params, json=data_tag)
 
 # --- 2. LOGIC ---
 def process_message(target_id, text, is_admin_sender):
     global FILES_LOADED
     
-    # 🔥 ระบบโหลดรูปแบบ "รอแป๊บเดียวได้เลย"
     if not FILES_LOADED:
-        with lock: # ให้บอททำงานทีละคิว จะได้ไม่ค้าง
+        with lock:
             if not FILES_LOADED:
                 take_thread_control(target_id)
                 send_message(target_id, "⏳ ระบบกำลังดึงข้อมูลภาพ กรุณารอสักครู่นะครับ...")
-                update_file_list() # โหลดข้อมูลประมาณ 2 วินาที
+                update_file_list()
                 if not FILES_LOADED:
                     send_message(target_id, "❌ ขออภัยครับ ระบบดึงข้อมูลขัดข้อง รบกวนแจ้งแอดมินครับ 🙏")
                     return
 
     text_cleaned = text.lower().replace(" ", "")
     
-    # 📌 ใช้ Regex ความยาว 7 หลัก (เช่น 269abcdefg)
-    pattern = r'(?:269|999)[a-z0-9]{7}'
-    valid_format_codes = re.findall(pattern, text_cleaned)
+    exact_pattern = r'(?:269|999)[a-z0-9]{7}'
+    valid_codes = re.findall(exact_pattern, text_cleaned)
     
-    if not valid_format_codes:
-        return
+    attempt_pattern = r'(?:269|999)[a-z0-9]*'
+    all_attempts = re.findall(attempt_pattern, text_cleaned)
 
     found_actions = [] 
     unknown_codes = []
 
-    for code in valid_format_codes:
+    for code in valid_codes:
         if code in CACHED_FILES:
-            found_actions.append((code, CACHED_FILES[code]))
+            if (code, CACHED_FILES[code]) not in found_actions:
+                found_actions.append((code, CACHED_FILES[code]))
         else:
-            if code not in unknown_codes: unknown_codes.append(code)
+            if code not in unknown_codes:
+                unknown_codes.append(code)
+
+    for code in all_attempts:
+        if len(code) >= 5: 
+            if code not in valid_codes and code not in unknown_codes:
+                matched = next((k for k in CACHED_FILES.keys() if k in code), None)
+                if matched:
+                    if (matched, CACHED_FILES[matched]) not in found_actions:
+                        found_actions.append((matched, CACHED_FILES[matched]))
+                else:
+                    unknown_codes.append(code)
+
+    if not found_actions and not unknown_codes:
+        return 
 
     if found_actions:
         take_thread_control(target_id)
-        
-        # 📌 ปรับเปลี่ยนลิงก์และชื่อเพจตรงนี้
         intro_msg = (
             "📸 ขออนุญาตส่งภาพนะครับ\n\n"
             "รวมภาพงานพิธี กดได้ที่ link นี้\n\n"
-            " -> linktr.ee/muteteam\n\n" # 👈 ปรับเป็น mahabucha ถ้าใช้กับมหาบูชา
-            "หรือ รับชมได้ที่หน้าเพจ \"มูเตทีม\"\n\n" # 👈 ปรับเป็น มหาบูชา ถ้าใช้กับมหาบูชา
+            " -> linktr.ee/muteteam\n\n"
+            "หรือ รับชมได้ที่หน้าเพจ \"มูเตทีม\"\n\n"
             "ทีมงานเทวาลัยสยามคเณศ ขอขอบคุณครับ"
         )
         send_message(target_id, intro_msg)
@@ -136,8 +133,6 @@ def process_message(target_id, text, is_admin_sender):
         for code_key, filename in found_actions:
             send_message(target_id, f"ภาพถาดถวาย รหัส : {code_key}")
             send_image(target_id, get_image_url(filename))
-            
-    if is_admin_sender: return 
 
     if unknown_codes:
         take_thread_control(target_id)
